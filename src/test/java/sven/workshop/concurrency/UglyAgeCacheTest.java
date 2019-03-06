@@ -1,71 +1,57 @@
 package sven.workshop.concurrency;
 
-import java.util.Timer;
-import java.util.TimerTask;
+import java.util.ArrayList;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.awaitility.Awaitility;
 import org.awaitility.Duration;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-public class UglyAgeCacheTest {
+class UglyAgeCacheTest {
 
-  final static int THREADS = 10;
-  final static CountDownLatch latch = new CountDownLatch(THREADS);
-  final static AgeCache cache = new UglyAgeCache(1000);
-  volatile AtomicBoolean threadFailed = new AtomicBoolean(false);
+  private static final int THREADS = 10;
+  static final AgeCache cache = new UglyAgeCache(1000);
+  static final CountDownLatch latch = new CountDownLatch(THREADS);
 
-  @Test()
-  public void expectAssertionError() {
-
-    final Thread.UncaughtExceptionHandler exceptionHandler = new Thread.UncaughtExceptionHandler() {
-      @Override
-      public void uncaughtException(final Thread t, final Throwable e) {
-        System.out.println("Dedd");
-        threadFailed.set(true);
-      }
-    };
-
-    final Timer timer = new Timer(true);
-    timer.schedule(new TimerTask() {
-
-      @Override
-      public void run() {
-        System.out.println(cache.getAge());
-      }
-    }, 5, 5);
-
+  @Test
+  void expectAssertionError() {
+    final var service = Executors.newFixedThreadPool(THREADS + 1);
+    final var futures = new ArrayList<Future<?>>();
     for (int i = 0; i < THREADS; i++) {
-      final Thread t = thread();
-      t.setUncaughtExceptionHandler(exceptionHandler);
-      t.start();
+      futures.add(service.submit(new AdjustCacheTask()));
     }
+    futures.add(service.submit(this::getFromCache));
 
-    Awaitility.with().pollDelay(Duration.FIVE_SECONDS).and().pollInterval(Duration.TEN_SECONDS).untilFalse(threadFailed);
-
-    timer.cancel();
-    Assertions.assertFalse(threadFailed.get());
+    Awaitility.with()
+        .pollDelay(Duration.FIVE_SECONDS)
+        .and()
+        .pollInterval(Duration.TEN_SECONDS)
+        .until(() -> futures.stream().noneMatch(Future::isDone));
+    service.shutdown();
   }
 
-  private Thread thread() {
+  private class AdjustCacheTask implements Callable<Void> {
 
-    return new Thread() {
-
-      @Override
-      public void run() {
-        latch.countDown();
-        try {
-          latch.await();
-          while (true) {
-            cache.increase(1);
-            cache.decrease(1);
-          }
-        } catch (final InterruptedException e) {
-          return;
+    @Override
+    public Void call() throws InterruptedException {
+      latch.countDown();
+      try {
+        latch.await();
+        while (true) {
+          cache.increase(1);
+          cache.decrease(1);
         }
+      } catch (final InterruptedException e) {
+        throw e;
       }
-    };
+    }
+  }
 
+  private void getFromCache() {
+    while (true) {
+      System.out.println(cache.getAge());
+    }
   }
 }
